@@ -1,0 +1,7 @@
+tv-token.txt
+einstellungen.json
+hochgeladen.json
+.vorbereitet/
+venv/
+bilder/*
+!bilder/.gitkeep
