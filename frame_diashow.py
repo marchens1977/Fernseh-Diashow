@@ -36,11 +36,15 @@ STANDARD_ORDNER = str(os.environ.get("FRAME_BILDER", HIER / "bilder"))
 VORBEREITET = HIER / ".vorbereitet"          # verkleinerte Kopien fuer den TV
 EINSTELLUNGEN = HIER / "einstellungen.json"  # TV-Adresse, Intervall ...
 HOCHGELADEN = HIER / "hochgeladen.json"      # welches Bild hat auf dem TV welche Nummer
+VARIANTE = HIER / "variante.txt"             # mit welchen Einstellungen die Bilder hochgeladen wurden
 TOKEN_DATEI = HIER / "tv-token.txt"          # "Schluessel" nach dem Erlauben am TV
 
 ERLAUBTE_ENDUNGEN = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp"}
 STANDARD = {"tv_ip": "", "minuten": 3, "zufall": False, "passepartout": "none",
-            "ordner": STANDARD_ORDNER, "tv_selbst": False}
+            "ordner": STANDARD_ORDNER, "tv_selbst": False, "hintergrund": "unscharf"}
+HINTERGRUENDE = [("unscharf", "Foto unscharf vergrößert"), ("schwarz", "Schwarz"),
+                 ("weiss", "Weiß"), ("grau", "Grau")]
+TV_BREITE, TV_HOEHE = 3840, 2160  # 16:9, so gross wie der Fernseher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("frame")
@@ -77,17 +81,33 @@ def bilder_liste():
     )
 
 
-def bild_vorbereiten(name):
-    """Dreht das Bild richtig herum und verkleinert es auf 4K (3840x2160) als JPG."""
+def variante(cfg):
+    return f"16x9-{cfg['hintergrund']}-{cfg['passepartout']}"
+
+
+def bild_vorbereiten(name, hintergrund="unscharf"):
+    """Macht aus dem Foto ein Bild in genau Fernseher-Groesse (16:9), ohne es zu verzerren.
+    Das Foto wird richtig herum gedreht, passend verkleinert und mittig gesetzt.
+    Die Raender werden mit Farbe oder einer unscharfen Kopie des Fotos gefuellt."""
+    from PIL import ImageEnhance, ImageFilter
     VORBEREITET.mkdir(exist_ok=True)
     quelle = bilder_ordner() / name
-    ziel = VORBEREITET / (Path(name).stem + ".jpg")
+    ziel = VORBEREITET / f"{Path(name).stem}_{hintergrund}.jpg"
     if ziel.exists() and ziel.stat().st_mtime >= quelle.stat().st_mtime:
         return ziel
     with Image.open(quelle) as img:
         img = ImageOps.exif_transpose(img).convert("RGB")
-        img.thumbnail((3840, 2160) if img.width >= img.height else (2160, 3840))
-        img.save(ziel, "JPEG", quality=92)
+        foto = ImageOps.contain(img, (TV_BREITE, TV_HOEHE), Image.LANCZOS)
+        if hintergrund == "unscharf":
+            klein = ImageOps.fit(img, (TV_BREITE // 20, TV_HOEHE // 20))
+            klein = klein.filter(ImageFilter.GaussianBlur(4))
+            leinwand = ImageEnhance.Brightness(klein).enhance(0.6).resize(
+                (TV_BREITE, TV_HOEHE), Image.BICUBIC)
+        else:
+            farbe = {"schwarz": (0, 0, 0), "weiss": (245, 244, 240), "grau": (60, 60, 60)}
+            leinwand = Image.new("RGB", (TV_BREITE, TV_HOEHE), farbe.get(hintergrund, (0, 0, 0)))
+        leinwand.paste(foto, ((TV_BREITE - foto.width) // 2, (TV_HOEHE - foto.height) // 2))
+        leinwand.save(ziel, "JPEG", quality=92)
     return ziel
 
 
@@ -116,17 +136,30 @@ class Fernseher:
             finally:
                 tv.close()
 
-    def hochladen(self, ip, namen, passepartout, fortschritt=None):
+    def hochladen(self, cfg, namen, fortschritt=None):
         """Laedt Bilder auf den TV, die dort noch nicht sind. Gibt Zuordnung zurueck."""
+        ip, passepartout = cfg["tv_ip"], cfg["passepartout"]
         zuordnung = lade_json(HOCHGELADEN, {})
-        neu = [n for n in namen if n not in zuordnung]
+        alte_variante = VARIANTE.read_text().strip() if VARIANTE.exists() else ""
         with self.sperre:
             tv = self.verbinden(ip)
             try:
+                if alte_variante != variante(cfg) and zuordnung:
+                    # Darstellung wurde geaendert -> alte Bilder vom TV loeschen, neu hochladen
+                    if fortschritt:
+                        fortschritt("Entferne alte Bilder vom Fernseher ...")
+                    try:
+                        tv.delete_list(list(zuordnung.values()))
+                    except Exception as e:
+                        log.warning("Alte Bilder konnten nicht geloescht werden: %s", e)
+                    zuordnung = {}
+                    speichere_json(HOCHGELADEN, zuordnung)
+                VARIANTE.write_text(variante(cfg))
+                neu = [n for n in namen if n not in zuordnung]
                 for i, name in enumerate(neu, 1):
                     if fortschritt:
                         fortschritt(f"Lade hoch {i}/{len(neu)}: {name}")
-                    datei = bild_vorbereiten(name)
+                    datei = bild_vorbereiten(name, cfg["hintergrund"])
                     cid = tv.upload(str(datei), file_type="JPEG",
                                     matte=passepartout, portrait_matte=passepartout)
                     zuordnung[name] = cid
@@ -220,8 +253,7 @@ class Diashow:
             namen = bilder_liste()
             if not namen:
                 raise RuntimeError("Im Ordner 'bilder' liegen keine Bilder.")
-            zuordnung = TV.hochladen(cfg["tv_ip"], namen, cfg["passepartout"],
-                                     fortschritt=self._setze_status)
+            zuordnung = TV.hochladen(cfg, namen, fortschritt=self._setze_status)
         except Exception as e:
             self._setze_status(f"Fehler: {e}")
             self.laeuft = False
@@ -338,6 +370,12 @@ SEITE = """<!doctype html>
   <label>Bilder-Ordner</label>
   <input name="ordner" value="{{ cfg.ordner }}" style="width:100%">
   <span class="klein">Auf dem Handy z.B. <code>/storage/emulated/0/Pictures/Frame</code> oder <code>/storage/emulated/0/DCIM/Camera</code></span>
+  <label>Ränder füllen mit (Fotos werden nicht verzerrt)</label>
+  <select name="hintergrund">
+   {% for wert, text in hintergruende %}
+    <option value="{{ wert }}" {{ 'selected' if cfg.hintergrund == wert }}>{{ text }}</option>
+   {% endfor %}
+  </select>
   <label>Passepartout (Rahmen um das Bild)</label>
   <select name="passepartout">
    {% for wert, text in [('none','kein Rahmen'),('shadowbox_polar','Schattenbox weiß'),('modern_polar','Modern weiß'),('modern_warm','Modern warm'),('flexible_polar','Schmal weiß')] %}
@@ -380,7 +418,8 @@ def sicherer_name(name):
 def startseite():
     return render_template_string(
         SEITE, status=SHOW.status, bilder=bilder_liste(), aktuell=SHOW.aktuell,
-        hochgeladen=lade_json(HOCHGELADEN, {}), cfg=lade_json(EINSTELLUNGEN, STANDARD))
+        hochgeladen=lade_json(HOCHGELADEN, {}), cfg=lade_json(EINSTELLUNGEN, STANDARD),
+        hintergruende=HINTERGRUENDE)
 
 
 @app.get("/status")
@@ -422,8 +461,7 @@ def jetzt(name):
     cfg = lade_json(EINSTELLUNGEN, STANDARD)
 
     def aufgabe():
-        z = TV.hochladen(cfg["tv_ip"], [name], cfg["passepartout"],
-                         fortschritt=lambda t: setattr(SHOW, "status", t))
+        z = TV.hochladen(cfg, [name], fortschritt=lambda t: setattr(SHOW, "status", t))
         TV.zeigen(cfg["tv_ip"], z[name])
         SHOW.aktuell = name
         SHOW.status = f"Zeige: {name}"
@@ -451,7 +489,8 @@ def entfernen(name):
     zuordnung = lade_json(HOCHGELADEN, {})
     cid = zuordnung.pop(name, None)
     (bilder_ordner() / name).unlink(missing_ok=True)
-    (VORBEREITET / (Path(name).stem + ".jpg")).unlink(missing_ok=True)
+    for alt in VORBEREITET.glob(Path(name).stem + "_*.jpg"):
+        alt.unlink(missing_ok=True)
     speichere_json(HOCHGELADEN, zuordnung)
     if cid:
         im_hintergrund(TV.loeschen, lade_json(EINSTELLUNGEN, STANDARD)["tv_ip"], [cid])
@@ -472,6 +511,8 @@ def einstellungen():
     if request.form.get("ordner", "").strip():
         cfg["ordner"] = request.form["ordner"].strip()
     cfg["passepartout"] = request.form.get("passepartout", "none")
+    if request.form.get("hintergrund") in dict(HINTERGRUENDE):
+        cfg["hintergrund"] = request.form["hintergrund"]
     speichere_json(EINSTELLUNGEN, cfg)
     SHOW.status = "Einstellungen gespeichert. (Gilt ab dem nächsten Start der Diashow.)"
     return redirect(url_for("startseite"))
