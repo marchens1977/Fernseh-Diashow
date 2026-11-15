@@ -16,7 +16,10 @@ import json
 import logging
 import os
 import random
+import socket
 import threading
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 
@@ -41,7 +44,11 @@ TOKEN_DATEI = HIER / "tv-token.txt"          # "Schluessel" nach dem Erlauben am
 
 ERLAUBTE_ENDUNGEN = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp"}
 STANDARD = {"tv_ip": "", "minuten": 3, "zufall": False, "passepartout": "none",
-            "ordner": STANDARD_ORDNER, "tv_selbst": False, "hintergrund": "unscharf"}
+            "ordner": STANDARD_ORDNER, "tv_selbst": False, "hintergrund": "unscharf",
+            "ausgeblendet": []}
+# Hier beginnt der Ordner-Browser (auf dem Handy der interne Speicher)
+HANDY_SPEICHER = Path("/storage/emulated/0")
+START_ORDNER = HANDY_SPEICHER if HANDY_SPEICHER.is_dir() else Path.home()
 HINTERGRUENDE = [("unscharf", "Foto unscharf vergrößert"), ("schwarz", "Schwarz"),
                  ("weiss", "Weiß"), ("grau", "Grau")]
 TV_BREITE, TV_HOEHE = 3840, 2160  # 16:9, so gross wie der Fernseher
@@ -72,17 +79,68 @@ def bilder_ordner():
     return Path(lade_json(EINSTELLUNGEN, STANDARD)["ordner"]).expanduser()
 
 
+def ist_bild(p):
+    return p.is_file() and p.suffix.lower() in ERLAUBTE_ENDUNGEN and not p.name.startswith(".")
+
+
 def bilder_liste():
     ordner = bilder_ordner()
     ordner.mkdir(parents=True, exist_ok=True)
-    return sorted(
-        p.name for p in ordner.iterdir()
-        if p.is_file() and p.suffix.lower() in ERLAUBTE_ENDUNGEN
-    )
+    weg = set(lade_json(EINSTELLUNGEN, STANDARD)["ausgeblendet"])
+    return sorted(p.name for p in ordner.iterdir() if ist_bild(p) and str(p) not in weg)
+
+
+# ------------------------------------------------------------------
+# Fernseher im WLAN finden (falls sich seine IP-Adresse aendert)
+# ------------------------------------------------------------------
+def ist_frame(ip):
+    """Fragt ein Geraet, ob es ein Samsung-Fernseher mit Kunst-Modus ist."""
+    try:
+        with urllib.request.urlopen(f"http://{ip}:8001/api/v2/", timeout=1.5) as antwort:
+            info = json.loads(antwort.read().decode("utf-8", "replace"))
+        geraet = info.get("device", {})
+        return str(geraet.get("FrameTVSupport", "")).lower() == "true"
+    except Exception:
+        return False
+
+
+def eigene_ip():
+    """Die IP-Adresse dieses Geraets im WLAN (es wird nichts gesendet)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.168.178.1", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return ""
+
+
+def suche_fernseher(letzte_ip=""):
+    """Durchsucht das Heimnetz (x.x.x.1 bis x.x.x.254) nach dem Frame."""
+    netze = []
+    for ip in (letzte_ip, eigene_ip()):
+        if ip and ip.count(".") == 3:
+            netz = ip.rsplit(".", 1)[0]
+            if netz not in netze:
+                netze.append(netz)
+    for netz in netze:
+        kandidaten = [f"{netz}.{i}" for i in range(1, 255)]
+        with ThreadPoolExecutor(max_workers=64) as pool:
+            for ip, treffer in zip(kandidaten, pool.map(ist_frame, kandidaten)):
+                if treffer:
+                    return ip
+    return None
+
+
+def erreichbar(ip):
+    try:
+        with socket.create_connection((ip, 8002), timeout=2):
+            return True
+    except OSError:
+        return False
 
 
 def variante(cfg):
-    return f"16x9-{cfg['hintergrund']}-{cfg['passepartout']}"
+    return f"16x9-{cfg['hintergrund']}-{cfg['passepartout']}-{cfg['ordner']}"
 
 
 def bild_vorbereiten(name, hintergrund="unscharf"):
@@ -121,8 +179,19 @@ class Fernseher:
     def verbinden(self, ip):
         if SamsungTVArt is None:
             raise RuntimeError("Bibliothek 'samsungtvws' fehlt. Bitte installieren.")
-        if not ip:
-            raise RuntimeError("Bitte zuerst die IP-Adresse des Fernsehers eintragen.")
+        if not ip or not erreichbar(ip):
+            # Fernseher nicht unter der gespeicherten Adresse -> im WLAN suchen
+            SHOW.status = "Suche den Fernseher im WLAN ..."
+            neu = suche_fernseher(ip)
+            if not neu:
+                raise RuntimeError("Fernseher nicht gefunden. Ist er eingeschaltet (oder im "
+                                   "Kunst-Modus) und im selben WLAN wie das Handy?")
+            if neu != ip:
+                cfg = lade_json(EINSTELLUNGEN, STANDARD)
+                cfg["tv_ip"] = neu
+                speichere_json(EINSTELLUNGEN, cfg)
+                log.info("Fernseher hat neue IP-Adresse: %s", neu)
+            ip = neu
         return SamsungTVArt(host=ip, port=8002, token_file=str(TOKEN_DATEI),
                             timeout=20, name="Frame-Diashow")
 
@@ -154,6 +223,9 @@ class Fernseher:
                         log.warning("Alte Bilder konnten nicht geloescht werden: %s", e)
                     zuordnung = {}
                     speichere_json(HOCHGELADEN, zuordnung)
+                if alte_variante != variante(cfg):
+                    for alt in VORBEREITET.glob("*.jpg"):  # alte Zwischenbilder weg
+                        alt.unlink(missing_ok=True)
                 VARIANTE.write_text(variante(cfg))
                 neu = [n for n in namen if n not in zuordnung]
                 for i, name in enumerate(neu, 1):
@@ -336,12 +408,16 @@ SEITE = """<!doctype html>
  <form method="post" action="{{ url_for('artmode', an=0) }}" style="display:inline"><button class="grau">Kunst-Modus aus</button></form>
 </section>
 
-<section><h2>Fotos vom Handy hinzufügen</h2>
- <form method="post" action="{{ url_for('hinzufuegen') }}" enctype="multipart/form-data">
-  <input type="file" name="fotos" accept="image/*" multiple required>
-  <button>⬆️ Hochladen</button>
- </form>
- <p class="klein">Die Fotos werden in den Bilder-Ordner (siehe Einstellungen) kopiert.</p>
+<section><h2>Welche Fotos?</h2>
+ <p>Aktueller Ordner:<br><b>{{ cfg.ordner }}</b></p>
+ <a class="knopf" href="{{ url_for('ordner_waehlen') }}">📁 Ordner auf dem Handy auswählen</a>
+ <details style="margin-top:10px"><summary>… oder einzelne Dateien hinzufügen</summary>
+  <form method="post" action="{{ url_for('hinzufuegen') }}" enctype="multipart/form-data">
+   <input type="file" name="fotos" multiple required>
+   <button>⬆️ Hinzufügen</button>
+  </form>
+  <p class="klein">Die Dateien werden in den aktuellen Ordner kopiert.</p>
+ </details>
 </section>
 
 <section><h2>Bilder im Ordner ({{ bilder|length }})</h2>
@@ -350,26 +426,27 @@ SEITE = """<!doctype html>
   <div><img loading="lazy" src="{{ url_for('vorschau', name=b) }}" class="{{ 'an' if b == aktuell }}">
    {{ b[:18] }}{% if b in hochgeladen %} ✅{% endif %}
    <form method="post" action="{{ url_for('jetzt', name=b) }}"><button style="padding:6px 8px;font-size:.8em">Zeigen</button></form>
-   <form method="post" action="{{ url_for('entfernen', name=b) }}" onsubmit="return confirm('Bild löschen?')">
-    <button class="rot" style="padding:6px 8px;font-size:.8em">Löschen</button></form>
+   <form method="post" action="{{ url_for('entfernen', name=b) }}">
+    <button class="grau" style="padding:6px 8px;font-size:.8em">Ausblenden</button></form>
   </div>
- {% else %}<p>Noch keine Bilder. Lade oben welche hoch.</p>{% endfor %}
+ {% else %}<p>In diesem Ordner sind keine Bilder. Wähle oben einen anderen Ordner.</p>{% endfor %}
  </div>
- <p class="klein">✅ = schon auf dem Fernseher gespeichert.</p>
+ <p class="klein">✅ = schon auf dem Fernseher gespeichert. „Ausblenden“ nimmt ein Bild nur aus der
+  Diashow – das Foto auf dem Handy bleibt erhalten.</p>
+ {% if cfg.ausgeblendet %}<form method="post" action="{{ url_for('einblenden') }}">
+  <button class="grau">Ausgeblendete Bilder ({{ cfg.ausgeblendet|length }}) wieder zeigen</button></form>{% endif %}
 </section>
 
 <section><h2>Einstellungen</h2>
  <form method="post" action="{{ url_for('einstellungen') }}">
   <label>IP-Adresse des Fernsehers (z.B. 192.168.178.45)</label>
   <input name="tv_ip" value="{{ cfg.tv_ip }}" placeholder="192.168.x.x">
+  <span class="klein">Ändert sich die Adresse, sucht das Programm den Fernseher automatisch.</span>
   <label>Jedes Bild zeigen für … Minuten (0.5 = 30 Sekunden)</label>
   <input name="minuten" type="number" step="0.25" min="0.25" value="{{ cfg.minuten }}">
   <label><input type="checkbox" name="zufall" {{ 'checked' if cfg.zufall }}> Zufällige Reihenfolge</label>
   <label><input type="checkbox" name="tv_selbst" {{ 'checked' if cfg.tv_selbst }}>
    Fernseher spielt die Diashow selbst ab (Handy kann danach aus sein; ganze Minuten; zeigt alle Bilder unter „Meine Fotos“)</label>
-  <label>Bilder-Ordner</label>
-  <input name="ordner" value="{{ cfg.ordner }}" style="width:100%">
-  <span class="klein">Auf dem Handy z.B. <code>/storage/emulated/0/Pictures/Frame</code> oder <code>/storage/emulated/0/DCIM/Camera</code></span>
   <label>Ränder füllen mit (Fotos werden nicht verzerrt)</label>
   <select name="hintergrund">
    {% for wert, text in hintergruende %}
@@ -385,6 +462,7 @@ SEITE = """<!doctype html>
   <p><button>💾 Speichern</button></p>
  </form>
  <form method="post" action="{{ url_for('testen') }}"><button class="grau">📡 Verbindung testen</button></form>
+ <form method="post" action="{{ url_for('suchen') }}"><button class="grau">🔍 Fernseher im WLAN suchen</button></form>
  <form method="post" action="{{ url_for('tv_aufraeumen') }}" onsubmit="return confirm('Alle von diesem Programm hochgeladenen Bilder vom Fernseher löschen?')">
   <button class="rot">🧹 Bilder vom Fernseher entfernen</button></form>
 </section>
@@ -485,16 +563,120 @@ def hinzufuegen():
 
 @app.post("/entfernen/<path:name>")
 def entfernen(name):
+    """Blendet ein Bild aus der Diashow aus. Das Original-Foto wird NICHT geloescht."""
     name = sicherer_name(name)
+    cfg = lade_json(EINSTELLUNGEN, STANDARD)
+    cfg["ausgeblendet"] = sorted(set(cfg["ausgeblendet"]) | {str(bilder_ordner() / name)})
+    speichere_json(EINSTELLUNGEN, cfg)
     zuordnung = lade_json(HOCHGELADEN, {})
     cid = zuordnung.pop(name, None)
-    (bilder_ordner() / name).unlink(missing_ok=True)
-    for alt in VORBEREITET.glob(Path(name).stem + "_*.jpg"):
-        alt.unlink(missing_ok=True)
     speichere_json(HOCHGELADEN, zuordnung)
     if cid:
-        im_hintergrund(TV.loeschen, lade_json(EINSTELLUNGEN, STANDARD)["tv_ip"], [cid])
-    SHOW.status = f"Gelöscht: {name}"
+        im_hintergrund(TV.loeschen, cfg["tv_ip"], [cid])
+    SHOW.status = f"Ausgeblendet: {name}"
+    return redirect(url_for("startseite"))
+
+
+@app.post("/einblenden")
+def einblenden():
+    cfg = lade_json(EINSTELLUNGEN, STANDARD)
+    cfg["ausgeblendet"] = []
+    speichere_json(EINSTELLUNGEN, cfg)
+    SHOW.status = "Alle Bilder werden wieder gezeigt."
+    return redirect(url_for("startseite"))
+
+
+ORDNER_SEITE = """<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Ordner wählen</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:0;background:#f4f1ea;color:#222}
+ header{background:#2f3e46;color:#fff;padding:14px 16px;font-size:1.2em}
+ section{background:#fff;margin:12px;padding:14px;border-radius:12px;box-shadow:0 1px 3px #0002}
+ a.zeile{display:block;padding:14px 8px;border-bottom:1px solid #eee;color:#222;text-decoration:none;font-size:1.05em}
+ .anz{float:right;color:#52796f}
+ button,.knopf{font-size:1em;padding:12px 16px;border:0;border-radius:10px;margin:4px 0;
+   background:#52796f;color:#fff;display:inline-block;text-decoration:none}
+ .grau{background:#888}.klein{font-size:.85em;color:#555;word-break:break-all}
+</style></head><body>
+<header>📁 Ordner auswählen</header>
+<section>
+ <p class="klein">{{ anzeige }}</p>
+ <p><b>{{ anzahl }} Bild(er)</b> direkt in diesem Ordner</p>
+ {% if anzahl %}<form method="post" action="{{ url_for('ordner_setzen') }}">
+  <input type="hidden" name="pfad" value="{{ pfad }}">
+  <button>✅ Diesen Ordner für die Diashow verwenden</button></form>{% endif %}
+ <a class="knopf grau" href="{{ url_for('startseite') }}">Abbrechen</a>
+</section>
+<section>
+ {% if oben %}<a class="zeile" href="{{ url_for('ordner_waehlen', pfad=oben) }}">⬆️ Eine Ebene zurück</a>{% endif %}
+ {% for name, voll, n in unterordner %}
+  <a class="zeile" href="{{ url_for('ordner_waehlen', pfad=voll) }}">📁 {{ name }}
+   {% if n %}<span class="anz">{{ n }} 🖼️</span>{% endif %}</a>
+ {% else %}<p>Keine Unterordner.</p>{% endfor %}
+</section></body></html>"""
+
+
+def pfad_pruefen(text):
+    """Nur Ordner innerhalb des Handy-Speichers zulassen."""
+    pfad = Path(text or START_ORDNER).resolve()
+    start = START_ORDNER.resolve()
+    if pfad != start and start not in pfad.parents:
+        pfad = start
+    return pfad
+
+
+def bilder_zaehlen(ordner):
+    try:
+        return sum(1 for p in ordner.iterdir() if ist_bild(p))
+    except OSError:
+        return 0
+
+
+@app.get("/ordner")
+def ordner_waehlen():
+    pfad = pfad_pruefen(request.args.get("pfad"))
+    if not pfad.is_dir():
+        pfad = START_ORDNER
+    unter = []
+    try:
+        for p in sorted(pfad.iterdir(), key=lambda x: x.name.lower()):
+            if p.is_dir() and not p.name.startswith(".") and p.name != "Android":
+                unter.append((p.name, str(p), bilder_zaehlen(p)))
+    except OSError:
+        pass
+    start = START_ORDNER.resolve()
+    anzeige = "Interner Speicher" + str(pfad)[len(str(start)):] if str(pfad).startswith(str(start)) else str(pfad)
+    return render_template_string(
+        ORDNER_SEITE, pfad=str(pfad), anzeige=anzeige, anzahl=bilder_zaehlen(pfad),
+        unterordner=unter, oben=str(pfad.parent) if pfad != start else "")
+
+
+@app.post("/ordner")
+def ordner_setzen():
+    pfad = pfad_pruefen(request.form.get("pfad"))
+    cfg = lade_json(EINSTELLUNGEN, STANDARD)
+    cfg["ordner"] = str(pfad)
+    speichere_json(EINSTELLUNGEN, cfg)
+    SHOW.stoppen()
+    SHOW.status = (f"Ordner gewählt ({bilder_zaehlen(pfad)} Bilder). Tippe auf „Diashow starten“ – "
+                   "beim ersten Mal werden die Bilder zum Fernseher geschickt.")
+    return redirect(url_for("startseite"))
+
+
+@app.post("/suchen")
+def suchen():
+    def aufgabe():
+        SHOW.status = "Suche den Fernseher im WLAN … (dauert bis zu einer Minute)"
+        cfg = lade_json(EINSTELLUNGEN, STANDARD)
+        ip = suche_fernseher(cfg["tv_ip"])
+        if ip:
+            cfg = lade_json(EINSTELLUNGEN, STANDARD)
+            cfg["tv_ip"] = ip
+            speichere_json(EINSTELLUNGEN, cfg)
+            SHOW.status = f"✅ Fernseher gefunden: {ip} (gespeichert). Seite neu laden zum Anzeigen."
+        else:
+            SHOW.status = "Kein Frame gefunden. Ist der Fernseher an und im selben WLAN?"
+    im_hintergrund(aufgabe)
     return redirect(url_for("startseite"))
 
 
@@ -508,8 +690,6 @@ def einstellungen():
         pass
     cfg["zufall"] = "zufall" in request.form
     cfg["tv_selbst"] = "tv_selbst" in request.form
-    if request.form.get("ordner", "").strip():
-        cfg["ordner"] = request.form["ordner"].strip()
     cfg["passepartout"] = request.form.get("passepartout", "none")
     if request.form.get("hintergrund") in dict(HINTERGRUENDE):
         cfg["hintergrund"] = request.form["hintergrund"]

@@ -46,9 +46,10 @@ Das Programm läuft in der kostenlosen App **Termux**. Das ist ein „Mini-Compu
 4. Ab jetzt reicht ein Tipp auf **Diashow** im Widget. Die Seite öffnet sich von selbst.
    Läuft das Programm schon, öffnet der Knopf nur die Seite.
 
-**Wo kommen die Fotos hin?** In den Handy-Ordner **Bilder → Frame**
-(`/storage/emulated/0/Pictures/Frame`). Du kannst in den Einstellungen auf der Seite
-auch einen anderen Ordner eintragen, z.B. `/storage/emulated/0/DCIM/Camera` für die Kamerafotos.
+**Welche Fotos werden gezeigt?** Auf der Seite unter **„Welche Fotos?“** auf
+**📁 Ordner auf dem Handy auswählen** tippen, durch die Ordner tippen und
+**„Diesen Ordner verwenden“** wählen. „Ausblenden“ nimmt ein Bild nur aus der Diashow –
+die Fotos auf dem Handy werden nie gelöscht.
 
 **Damit das Handy nicht dauernd laufen muss:** In den Einstellungen das Häkchen
 **„Fernseher spielt die Diashow selbst ab“** setzen. Dann schickt das Handy die Bilder einmal
@@ -75,6 +76,12 @@ Diese Adresse im Handy-Browser öffnen und weiter wie unten.
 4. **Verbindung testen** drücken. Am Fernseher erscheint eine Frage → mit der Fernbedienung
    **„Zulassen“** wählen. Das ist nur einmal nötig.
 5. **Diashow starten** drücken. 🎉
+
+## Die IP-Adresse des Fernsehers
+Der Router kann dem Fernseher irgendwann eine neue Adresse geben. Das Programm merkt das und
+**sucht den Fernseher dann automatisch im WLAN** (Knopf: „🔍 Fernseher im WLAN suchen“).
+Noch zuverlässiger: in der FritzBox (`fritz.box` → Heimnetz → Netzwerk → beim Fernseher auf ✏️)
+**„Diesem Netzwerkgerät immer die gleiche IPv4-Adresse zuweisen“** anhaken → OK.
 
 ## Gut zu wissen
 - Beim ersten Start dauert es etwas: jedes Bild wird einmal zum Fernseher geschickt
