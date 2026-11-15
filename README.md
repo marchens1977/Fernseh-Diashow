@@ -37,6 +37,15 @@ Das Programm läuft in der kostenlosen App **Termux**. Das ist ein „Mini-Compu
    Der Browser öffnet sich automatisch mit der Diashow-Seite (`http://localhost:8080`).
 5. Weiter wie unten bei „Mit dem Fernseher verbinden“.
 
+**Knopf auf dem Startbildschirm (statt `diashow` einzutippen):**
+1. Die App **Termux:Widget** installieren – genauso wie Termux von
+   `f-droid.org/packages/com.termux.widget/` (wieder die neueste APK nehmen).
+2. In Termux einmal eingeben: `bash fernseh-diashow/knopf-einrichten.sh`
+3. Auf dem Startbildschirm lange auf eine freie Stelle drücken → **Widgets** →
+   **Termux:Widget** suchen → auf den Startbildschirm ziehen.
+4. Ab jetzt reicht ein Tipp auf **Diashow** im Widget. Die Seite öffnet sich von selbst.
+   Läuft das Programm schon, öffnet der Knopf nur die Seite.
+
 **Wo kommen die Fotos hin?** In den Handy-Ordner **Bilder → Frame**
 (`/storage/emulated/0/Pictures/Frame`). Du kannst in den Einstellungen auf der Seite
 auch einen anderen Ordner eintragen, z.B. `/storage/emulated/0/DCIM/Camera` für die Kamerafotos.

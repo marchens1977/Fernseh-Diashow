@@ -23,6 +23,8 @@ ORDNER="$(cd "$(dirname "$0")" && pwd)"
 grep -q "alias diashow=" ~/.bashrc 2>/dev/null || \
   echo "alias diashow='bash $ORDNER/handy-starten.sh'" >> ~/.bashrc
 
+bash "$ORDNER/knopf-einrichten.sh" >/dev/null 2>&1 || true
+
 echo ""
 echo "======================================================"
 echo " Fertig! Termux einmal schliessen und neu oeffnen,"
