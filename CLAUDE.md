@@ -44,6 +44,7 @@ Ein kleines Programm, das Fotos aus einem Ordner als **Diashow im Kunst-Modus** 
 - **15.11.2026** – Startbildschirm-Icon über Termux:Widget.
 - **15.11.2026** – Ordner-Browser, „Ausblenden“ statt Löschen, automatische Fernseher-Suche.
 - Bisher keine Pull Requests; Änderungen wurden direkt auf `main` gespeichert.
+- **18.11.2026** – Regel „Hilfsprogramme und Tests gehören ins Projekt“ ins Tagebuch aufgenommen (Abschnitt 8).
 
 ## 4. Offene Ideen / nächste Schritte
 - Musik zur Diashow: Nutzer entscheidet zwischen Bluetooth-Lautsprecher/Soundbar (kein Code nötig)
@@ -64,3 +65,20 @@ am Ende der Antwort: **„Tipp: Du kannst jetzt mit /model claude-opus-5-5 zurü
 
 ## 7. Pflege
 Nach jeder größeren Änderung dieses Tagebuch aktualisieren.
+
+## 8. Hilfsprogramme und Tests gehören ins Projekt
+1. Automatische Prüfungen (Tests) und Hilfsprogramme, die über eine einzelne Aufgabe hinaus nützlich sind,
+   werden im Projekt gespeichert (z. B. Ordner `werkzeuge/` oder `test/`) – nicht nur im Arbeitsbereich
+   der Sitzung, der beim Archivieren verloren geht.
+2. Im Tagebuch steht, wie man sie startet und was sie prüfen.
+3. Nach jeder Code-Änderung die vorhandenen Prüfungen laufen lassen; bei neuen Funktionen passende Prüfpunkte ergänzen.
+4. Gibt es noch keine automatische Prüfung, bei der nächsten Code-Änderung eine einfache anlegen.
+5. Was Claude nicht selbst testen kann (z. B. echte Anmeldungen, das echte Handy, den Raspberry Pi),
+   im Tagebuch als Test für den Nutzer vermerken.
+
+### Vorhandene Prüfungen
+- **Stand 18.11.2026:** noch keine automatischen Prüfungen und keine Hilfsprogramme vorhanden.
+  Die erste einfache Prüfung kommt mit der nächsten Code-Änderung.
+
+### Tests für den Nutzer (kann Claude nicht selbst prüfen)
+- Verbindung zum echten Fernseher (Frame), Start über das Termux-Icon auf dem Handy, Autostart auf dem Raspberry Pi.
